@@ -1,0 +1,104 @@
+#!/usr/bin/env -S bash -x
+
+if (( $EUID != 0 )); then echo "Please run as root" ; exit 1; fi
+	
+RAWDEV=sda
+DEV=/dev/$RAWDEV
+NAME=Arwin
+DATE=$(date +%y%m)
+FROM=192.168.6.251
+
+umount ${DEV}1
+umount ${DEV}2
+
+if true ; then
+	sfdisk --wipe always $DEV <<-EOF
+		label: dos
+		label-id: 0x542d34fa
+		device: /dev/sda
+		unit: sectors
+		sector-size: 512
+
+		/dev/sda1 : start=-, size= 1GiB, type=c, bootable
+		/dev/sda2 : start=-, size= -, type=83
+	EOF
+	kpartx $DEV
+	partprobe 
+	blockdev -v --rereadpt $DEV
+
+	sleep 10
+
+	mkfs.vfat -n system-boot ${DEV}1 || exit 2
+	mkfs.btrfs -f -L Domoticz-${NAME} -m DUP -d DUP ${DEV}2 || exit 3
+	#mkfs.btrfs -f -L Domoticz-${NAME} -m DUP  ${DEV}2 || exit 3
+	
+	kpartx $DEV
+	partprobe 
+	blockdev -v --rereadpt $DEV
+
+	sleep 10
+
+	BOOTUUID=$(ls -l /dev/disk/by-uuid/ | grep ${RAWDEV}1 | awk '{ print $9 }')
+	ROOTUUID=$(ls -l /dev/disk/by-uuid/ | grep ${RAWDEV}2 | awk '{ print $9 }')
+
+	mkdir -p /mnt/tmp
+	mount ${DEV}1 /mnt/tmp || exit 4
+	ssh root@$FROM 'tar --zstd -C /boot/firmware -c . | zstd -2 -T2 | buffer -m 20M' | buffer -m 20M | unzstd | pv | sudo tar --no-same-owner --zstd -C /mnt/tmp -x
+       	
+	sed -i -E "s/(LABEL|UUID)=[^ \t]+/UUID=$ROOTUUID/"		/mnt/tmp/cmdline.txt	|| exit 5
+	sed -i -E "/^hostname:/s/.*/hostname: Domoticz${NAME}/"		/mnt/tmp/user-data	|| exit 6
+	sed -i -E "/^instance-id:/s/.*/instance-id: ${NAME}-${DATE}/"	/mnt/tmp/meta-data	|| exit 7
+	cp network-config						/mnt/tmp/network-config	|| exit 8
+
+	umount /mnt/tmp
+
+fi
+
+mount -o defaults,discard,commit=30,noatime,compress=zstd:3,autodefrag ${DEV}2 /mnt/tmp || exit 9
+
+if true ; then
+
+	ssh root@$FROM 'btrfs send /.snapshots/$(ls -tr1 /.snapshots | tail -n1)/snapshot | zstd -2 -T2 | buffer -m 20M ' | buffer -m 20M | unzstd | pv | sudo btrfs receive /mnt/tmp || exit 10
+	btrfs property set -f -t subvol /mnt/tmp/snapshot ro false || exit 11
+	mv /mnt/tmp/snapshot /mnt/tmp/@ || exit 12
+	btrfs subvolume create /mnt/tmp/@/.snapshots
+
+	ssh root@$FROM 'btrfs send /home/.snapshots/$(ls -tr1 /home/.snapshots | tail -n1)/snapshot | zstd -2 -T2 | buffer -m 20M ' | buffer -m 20M | unzstd | pv | sudo btrfs receive /mnt/tmp || exit 13
+	btrfs property set -f -t subvol /mnt/tmp/snapshot ro false || exit 14
+	mv  /mnt/tmp/snapshot /mnt/tmp/@home || exit 15
+	btrfs subvolume create /mnt/tmp/@home/.snapshots
+
+fi
+
+sed -i -E "/vfat/s/UUID=[^ \t]+/UUID=$BOOTUUID/; /btrfs/s/UUID=[^ \t]+/UUID=$ROOTUUID/" /mnt/tmp/@/etc/fstab 
+
+yes | ssh-keygen -N '' -C root@Domoticz${NAME} -f /mnt/tmp/@/root/.ssh/id_rsa		|| exit 20
+if [ -d /mnt/tmp/@home/domoticz/.ssh ]	; then yes | ssh-keygen -N "" -C domoticz@Domoticz${NAME} -f /mnt/tmp/@home/domoticz/.ssh/id_rsa	|| exit 21 ; fi
+if [ -d /mnt/tmp/@home/henk/.ssh ] 	; then yes | ssh-keygen -N "" -C henk@Domoticz${NAME}	  -f /mnt/tmp/@home/henk/.ssh/id_rsa		|| exit 22 ; fi
+
+ssh root@192.168.251.251 /bin/bash <<-EOF
+	set -x
+	cd /usr/local/etc/openvpn
+	FILE=Domoticz${NAME}-Rijssen-$DATE
+	if ! [ -f \${FILE}.ovpn ] ; then
+		./MakeOvpnRijssenNoPass \${FILE}
+	fi
+
+	FILE=Domoticz${NAME}-HenkNet-$DATE
+	if ! [ -f \${FILE}.ovpn ] ; then
+		./MakeOvpnNoPass \${FILE}
+	fi
+
+	ls -l *${NAME}*
+
+EOF
+
+cd /mnt/tmp/@/etc/openvpn || exit 30
+rm *.conf 2>/dev/null
+scp "root@192.168.251.251:/usr/local/etc/openvpn/Domoticz${NAME}*-$DATE.ovpn" . || exit 31
+file-rename -- 's/\.ovpn$/.conf/' *.ovpn
+chmod 400 *.conf
+cd -
+
+umount /mnt/tmp
+
