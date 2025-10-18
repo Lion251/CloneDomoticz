@@ -1,0 +1,20 @@
+# Denk eraan dat je, iedere keer dat je deze file aanpast, de file meta-data aanpast.
+# Anders worden wijzigingen niet doorgevoerd.
+# Wachtwoorden kunnen in plain text worden ingevoerd, of geencrypt met wpa_passphrase <accesspointnaam>
+
+version: 2
+ethernets:
+  eth0:
+    dhcp4: true
+    optional: true
+wifis:
+  renderer: networkd
+  wlan0:
+    dhcp4: true
+    optional: true
+    access-points:
+      gb24:
+        password: "a8858bbf1f5dbd12aea01c7ccf70c80b4a23bf0711d023aaf88c554c2c5575dc"
+      Henknet3:
+        password: "80f7cac206c19ea90b7b1401539229dcf9b006f6e70d4de29c7007d133da7fa9"
+
